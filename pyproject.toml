@@ -1,0 +1,27 @@
+[tool.poetry]
+name = "fed-sentiment"
+version = "0.1.0"
+description = ""
+authors = ["benisbuzz <ben@danziger.uk>"]
+readme = "README.md"
+packages = [{include = "fed_sentiment"}]
+
+[tool.poetry.dependencies]
+python = ">=3.10, <3.13"
+pandas = "^2.1.1"
+openai = "^0.28.1"
+python-dotenv = "^1.0.0"
+ipython = "^8.16.0"
+ipykernel = "^6.25.2"
+structlog = "^23.1.0"
+aiolimiter = "^1.1.0"
+pathlib = "^1.0.1"
+openpyxl = "^3.1.2"
+certifi = "^2023.7.22"
+mypy = "^1.5.1"
+pandas-stubs = "^2.1.1.230928"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
