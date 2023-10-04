@@ -20,7 +20,7 @@ def get_justify_prompt(sentiment: str) -> str:
     )
 
 
-async def get_multiple_answers(
+async def get_sentence_reasoning(
     sentiments: list[int], base_inputs: list[str]
 ) -> list[str]:
     key = {0: "dovish", 1: "hawkish", 2: "neutral", "-": "neutral"}
@@ -38,11 +38,11 @@ async def get_multiple_answers(
     return await asyncio.gather(*futures)
 
 
-async def get_reasoning(annotated_data: pd.DataFrame, file_name: str) -> pd.DataFrame:
-    raw_sentiment = await get_multiple_answers(
+async def get_reasoning_df(annotated_data: pd.DataFrame, file_name: str) -> pd.DataFrame:
+    raw_sentiment = await get_sentence_reasoning(
         list(annotated_data.loc[:, "label"]), list(annotated_data.loc[:, "sentence"])
     )
     for i, justification in enumerate(raw_sentiment):
         annotated_data.iloc[i, 2] = justification
-        annotated_data.to_csv(f"{file_name}.csv")
+        annotated_data.to_csv(file_name)
     return annotated_data

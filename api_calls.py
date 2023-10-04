@@ -5,7 +5,6 @@ import certifi
 import os
 import structlog
 import asyncio
-from aiolimiter import AsyncLimiter
 
 load_dotenv()
 
@@ -13,16 +12,19 @@ logger = structlog.get_logger()
 
 SSL_CONTEXT = ssl.create_default_context(cafile=certifi.where())
 
-limiter = AsyncLimiter(1000)
-
+import asyncio
+import aiohttp
+import os
 
 async def get_api_call(messages: list[dict[str, str]]) -> str:
-    async with limiter:
-        async with aiohttp.ClientSession() as session:
+    base_wait_time = 1 
+    max_retries = 10
+    async with aiohttp.ClientSession() as session:
+        for i in range(max_retries):
             async with session.post(
                 "https://api.openai.com/v1/chat/completions",
                 json={
-                    "model": "gpt-4",
+                    "model": "ft:gpt-3.5-turbo-0613:personal::862ZOMQr",
                     "messages": messages,
                     "temperature": 0.0,
                 },
@@ -31,12 +33,20 @@ async def get_api_call(messages: list[dict[str, str]]) -> str:
             ) as response:
                 if response.status == 200:
                     result = await response.json()
+                    logger.info("got response", response_status=response.status)
                     return result["choices"][0]["message"]["content"]
+                elif response.status == 429: 
+                    wait_time = base_wait_time * (2 ** i)
+                    logger.info(f"Rate limit exceeded. Initiating Exponential backoff", wait_time=wait_time)
+                    await asyncio.sleep(wait_time)
                 else:
-                    logger.info(
-                        f"Failed to get a valid response. Status code: {response.status}"
+                    logger.error(
+                        f"Unexpected error. Initiaiting exponential backoff", response_status=response.status, wait_time=wait_time
                     )
-                    return await response.text()
+                    wait_time = base_wait_time * (2 ** i)
+                    await asyncio.sleep(wait_time)
+        logger.error("Exhausted all retries without a successful request")
+        return "Error: Exhausted all retries without a successful request"
 
 
 async def get_answer(
@@ -68,5 +78,4 @@ async def get_multiple_answers(
     futures = [
         get_answer(base_prompts, base_input, with_input) for base_input in base_inputs
     ]
-    logger.info("fetched futures")
     return await asyncio.gather(*futures)

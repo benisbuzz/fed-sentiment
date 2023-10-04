@@ -20,6 +20,7 @@ openpyxl = "^3.1.2"
 certifi = "^2023.7.22"
 mypy = "^1.5.1"
 pandas-stubs = "^2.1.1.230928"
+tiktoken = "^0.5.1"
 
 
 [build-system]
