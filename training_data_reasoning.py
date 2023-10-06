@@ -31,7 +31,8 @@ async def get_sentence_reasoning(
                     "role": "user",
                     "content": get_justify_prompt(key[sentiment]) + base_input,
                 }
-            ]
+            ],
+            model = "gpt-4"
         )
         for sentiment, base_input in zip(sentiments, base_inputs)
     ]
@@ -40,9 +41,8 @@ async def get_sentence_reasoning(
 
 async def get_reasoning_df(annotated_data: pd.DataFrame, file_name: str) -> pd.DataFrame:
     raw_sentiment = await get_sentence_reasoning(
-        list(annotated_data.loc[:, "label"]), list(annotated_data.loc[:, "sentence"])
+        list(annotated_data["label"]), list(annotated_data["sentence"])
     )
-    for i, justification in enumerate(raw_sentiment):
-        annotated_data.iloc[i, 2] = justification
-        annotated_data.to_csv(file_name)
+    annotated_data = annotated_data.assign(reason = raw_sentiment)
+    annotated_data.to_csv(file_name)
     return annotated_data
