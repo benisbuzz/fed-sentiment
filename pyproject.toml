@@ -26,6 +26,14 @@ pydantic = "^2.4.2"
 pypdf2 = "^3.0.1"
 transformers = "^4.34.0"
 nltk = "^3.8.1"
+matplotlib = "^3.8.0"
+fredpy = "^3.2.8"
+statsmodels = "^0.14.0"
+chardet = "^5.2.0"
+fredapi = "^0.5.1"
+fred = "^3.1"
+beautifulsoup4 = "^4.12.2"
+lxml = "^4.9.3"
 
 
 [build-system]
