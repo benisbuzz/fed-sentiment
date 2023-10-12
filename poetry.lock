@@ -2812,6 +2812,20 @@ tests = ["coverage[toml]", "freezegun (>=0.2.8)", "pretend", "pytest (>=6.0)", "
 typing = ["mypy", "rich", "twisted"]
 
 [[package]]
+name = "ta-lib"
+version = "0.4.28"
+description = "Python wrapper for TA-Lib"
+category = "main"
+optional = false
+python-versions = "*"
+files = [
+    {file = "TA-Lib-0.4.28.tar.gz", hash = "sha256:3f03847162e003e0d92a8a89d9e8b7192dfe1235507e2f7d1d0e66cd5af7a48e"},
+]
+
+[package.dependencies]
+numpy = "*"
+
+[[package]]
 name = "tiktoken"
 version = "0.5.1"
 description = "tiktoken is a fast BPE tokeniser for use with OpenAI's models"
@@ -3270,4 +3284,4 @@ multidict = ">=4.0"
 [metadata]
 lock-version = "2.0"
 python-versions = ">=3.10, <3.13"
-content-hash = "74d09df4cc321cb8e8fc869a1a82abf94655e990a352753e83f76ca0595c6db7"
+content-hash = "3ef8d4ab278c7521eea7065408499a1515b0fb253d80e278c0a98c5fd44b7651"

@@ -34,6 +34,7 @@ fredapi = "^0.5.1"
 fred = "^3.1"
 beautifulsoup4 = "^4.12.2"
 lxml = "^4.9.3"
+ta-lib = "^0.4.28"
 
 
 [build-system]

@@ -11,20 +11,22 @@ load_dotenv()
 logger = structlog.get_logger()
 
 SSL_CONTEXT = ssl.create_default_context(cafile=certifi.where())
-SEMAPHORE = asyncio.Semaphore(100)
+SEMAPHORE = asyncio.Semaphore(50)
+
 
 def open_session() -> aiohttp.ClientSession:
     return aiohttp.ClientSession()
+
 
 async def close_session(session: aiohttp.ClientSession) -> None:
     await session.close()
 
 
 async def _get_api_call(
-    session: aiohttp.ClientSession, messages: list[dict[str, str]], model: str
+    session: aiohttp.ClientSession, model: str, messages: list[dict[str, str]]
 ) -> str | ConnectionAbortedError:
     base_wait_time = 1
-    max_retries = 10
+    max_retries = 20
     async with SEMAPHORE:
         for i in range(max_retries):
             async with session.post(
@@ -52,10 +54,10 @@ async def _get_api_call(
                 elif response.status == 502:
                     logger.error(
                         "Bad gateway, waiting..",
-                        response_status = response.status,
-                        wait_time = 1,
+                        response_status=response.status,
+                        wait_time=5,
                     )
-                    await asyncio.sleep(1)
+                    await asyncio.sleep(5)
                 else:
                     logger.error(
                         f"Unexpected Error. Waiting...",
@@ -66,34 +68,35 @@ async def _get_api_call(
     raise ConnectionAbortedError("Too many errors. Aborted API Call")
 
 
-async def get_api_call(session: aiohttp.ClientSession, messages: list[dict[str, str]], model: str) -> str:
-    counter = 0
-    while counter <= 50:
-        try:
-            return await _get_api_call(session, messages, model)
-        except Exception as e:
-            logger.error(f"got {e}. waiting...", error_count=counter, wait_time=4)
-            await asyncio.sleep(4)
-            counter += 1
-    return "Unable to make api call"
+async def get_api_call(
+    session: aiohttp.ClientSession, model: str, instructions: list[str], base_input: str
+) -> list[str]:
+    answers = []
+    messages = [
+        {"role": "user", "content": instructions[0] + base_input},
+    ]
+    answer = await _get_api_call(session, model, messages)
+    answers.append(answer)
+    for prompt in instructions[1:]:
+        messages.extend(
+            (
+                {"role": "assistant", "content": answer},
+                {"role": "user", "content": prompt},
+            )
+        )
+        answer = await _get_api_call(session, model, messages)
+        answers.append(answer)
+    return answers
 
 
 async def get_multiple_api_calls(
-    system: str, prompts: list[str], model: str
-) -> list[str]:
+    model: str, instructions: list[str], base_inputs: list[str]
+) -> list[list[str]]:
     session = open_session()
     futures = [
-        get_api_call(
-            session,
-            [
-                {"role": "system", "content": system},
-                {"role": "user", "content": prompt},
-            ],
-            model,
-        )
-        for prompt in prompts
+        get_api_call(session, model, instructions, base_input)
+        for base_input in base_inputs
     ]
     result = await asyncio.gather(*futures)
     await close_session(session)
     return result
-
