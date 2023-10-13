@@ -5,6 +5,7 @@ import certifi
 import os
 import structlog
 import asyncio
+import time
 
 load_dotenv()
 
@@ -15,7 +16,8 @@ SEMAPHORE = asyncio.Semaphore(50)
 
 
 def open_session() -> aiohttp.ClientSession:
-    return aiohttp.ClientSession()
+    timeout = aiohttp.ClientTimeout(total=10.0)
+    return aiohttp.ClientSession(timeout=timeout)
 
 
 async def close_session(session: aiohttp.ClientSession) -> None:
@@ -68,6 +70,18 @@ async def _get_api_call(
     raise ConnectionAbortedError("Too many errors. Aborted API Call")
 
 
+async def _get_api_call_handle_timeout(
+    session: aiohttp.ClientSession, model: str, messages: list[dict[str, str]]
+) -> str:
+    while True:
+        try:
+            return await _get_api_call(session, model, messages)
+        except asyncio.TimeoutError as e:
+            logger.error("got timeout error, waiting", wait_time=3)
+            time.sleep(3)
+            return await _get_api_call(session, model, messages)
+
+
 async def get_api_call(
     session: aiohttp.ClientSession, model: str, instructions: list[str], base_input: str
 ) -> list[str]:
@@ -75,7 +89,7 @@ async def get_api_call(
     messages = [
         {"role": "user", "content": instructions[0] + base_input},
     ]
-    answer = await _get_api_call(session, model, messages)
+    answer = await _get_api_call_handle_timeout(session, model, messages)
     answers.append(answer)
     for prompt in instructions[1:]:
         messages.extend(
@@ -84,7 +98,7 @@ async def get_api_call(
                 {"role": "user", "content": prompt},
             )
         )
-        answer = await _get_api_call(session, model, messages)
+        answer = await _get_api_call_handle_timeout(session, model, messages)
         answers.append(answer)
     return answers
 
