@@ -9,6 +9,7 @@ from typing import Union, Optional, Tuple
 import statsmodels.api as sm
 from statsmodels.iolib.summary import Summary
 from talib import MA as ma
+from functools import reduce
 
 logger = structlog.get_logger()
 
@@ -49,31 +50,41 @@ def create_index(prompt_name: str, model: str) -> pd.Series:
 
 def get_equivalent_series(
     hawk_series: pd.Series,
-    data_series: pd.Series,
     log: bool,
     ma_lag: Optional[int] = None,
     shift_lag: Optional[int] = None,
-) -> pd.Series:
+    **kwargs: np.ndarray,
+) -> dict[str, pd.Series]:
     hawk_series = hawk_series[~hawk_series.index.duplicated(keep="first")]
     if ma_lag:
         hawk_series = ma(hawk_series, ma_lag)
     if shift_lag:
         hawk_series.index += pd.DateOffset(days=shift_lag)
-    data_series = data_series.resample("D").ffill().reindex(hawk_series.index)
+    all_data_series = {
+        key: value.resample("D").ffill().reindex(hawk_series.index)
+        for key, value in kwargs.items()
+    }
     if log:
         hawk_series = np.log(hawk_series / hawk_series.shift(1))
-        data_series = np.log(data_series / data_series.shift(1))
-
-    common_index = data_series.dropna().index.intersection(hawk_series.dropna().index)
-    return (hawk_series[common_index], data_series[common_index])
+        all_data_series = {
+            key: np.log(value / value.shift(1)) for key, value in all_data_series.items()
+        }
+    common_index = reduce(
+        lambda x, y: x.intersection(y.dropna().index),
+        all_data_series.values(),
+        hawk_series.dropna().index,
+    )
+    return {"hawkishness": hawk_series[common_index]} | {
+        key: value[common_index] for key, value in all_data_series.items()
+    }
 
 
 def get_correlation_df(
     hawk_series: pd.Series,
     data_series: pd.Series,
+    log: bool,
     ma_lags: range,
     shift_lags: range,
-    log: bool,
 ) -> pd.DataFrame:
     df = pd.DataFrame(
         data={f"ma_{i}": [None] * len(shift_lags) for i in ma_lags},
@@ -82,38 +93,59 @@ def get_correlation_df(
     for ma_lag in ma_lags:
         for shift_lag in shift_lags:
             equalised_series = get_equivalent_series(
-                hawk_series, data_series, log, ma_lag, shift_lag
+                hawk_series, log, ma_lag, shift_lag, data_series=data_series
             )
             df.loc[f"shift_{shift_lag}", f"ma_{ma_lag}"] = np.corrcoef(
-                np.array(equalised_series[0]), np.array(equalised_series[1])
+                np.array(equalised_series["hawkishness"]),
+                np.array(equalised_series["data_series"]),
             )[0][1]
     return df
 
 
-def get_regression_summary(dependant: np.array, *args: Tuple[np.array, ...]) -> Summary:
+def get_regression(dependant: np.ndarray, *args: np.ndarray) -> Summary:
     regressors = []
     for arg in args:
         regressors.append(arg)
     x = sm.add_constant(np.column_stack(regressors))
-    model = sm.OLS(dependant, x).fit()
-    return model.summary()
+    return sm.OLS(dependant, x).fit()
 
-def get_regression_df(hawk_series: pd.Series, data_series: pd.Series, log: bool, ma_lags: range, shift_lags: range) -> pd.DataFrame:
+
+def get_regression_df(
+    dependant: str,
+    hawk_series: pd.Series,
+    log: bool,
+    ma_lags: range,
+    shift_lags: range,
+    ols_attribute: str,
+    **kwargs: pd.Series,
+) -> pd.DataFrame:
     df = pd.DataFrame(
         data={f"ma_{i}": [None] * len(shift_lags) for i in ma_lags},
         index=[f"shift_{i}" for i in shift_lags],
     )
     for ma_lag in ma_lags:
         for shift_lag in shift_lags:
-            series = get_equivalent_series(hawk_series, data_series, log, ma_lag, shift_lag)
-            ols = get_regression_summary(np.array(series[0]), np.array(series[1]))
-            df.loc[f"shift_{shift_lag}", f"ma_{ma_lag}"] = ols.tables[0].data[5][-1]
+            all_data_series = get_equivalent_series(
+                hawk_series, log, ma_lag, shift_lag, **kwargs
+            )
+            ols = get_regression(
+                np.array(all_data_series[dependant]),
+                *(
+                    np.array(value)
+                    for key, value in all_data_series.items()
+                    if key != dependant
+                ),
+            )
+            df.loc[f"shift_{shift_lag}", f"ma_{ma_lag}"] = ols.__getattribute__(
+                ols_attribute
+            )
     return df
 
 
 def get_loc_max(df: pd.DataFrame) -> tuple[str, str]:
     max_value = df.values.max()
     return df[df == max_value].stack().index[0]
+
 
 def get_loc_min(df: pd.DataFrame) -> tuple[str, str]:
     min_value = df.values.min()
