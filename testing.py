@@ -5,13 +5,43 @@ from pathlib import Path
 import regex as re
 import structlog
 import numpy as np
-from typing import Union, Optional, Tuple
+from typing import Union, Optional
+import requests
 import statsmodels.api as sm
 from statsmodels.iolib.summary import Summary
+from statsmodels.tsa.ar_model import AutoReg
 from talib import MA as ma
 from functools import reduce
+from dotenv import load_dotenv
+
+load_dotenv()
 
 logger = structlog.get_logger()
+FREDPY_API_CALL = os.getenv("FREDPY_API_KEY")
+
+
+def get_fred(series_id: str):
+    url = (
+        "https://api.stlouisfed.org/fred/series/observations?series_id="
+        + series_id
+        + "&api_key="
+        + FREDPY_API_CALL
+        + "&file_type=json"
+    )
+    request = requests.get(url)
+    if request.status_code != 200:
+        raise ValueError(f"invalid series_code: {series_id}\nurl: {url}")
+    data = request.json()["observations"]
+    idx, values = (
+        [pd.Timestamp(ele["date"]) for ele in data],
+        [
+            float(ele["value"])
+            if any(char.isdigit() for char in ele["value"])
+            else np.nan
+            for ele in data
+        ],
+    )
+    return pd.Series(values, idx)
 
 
 def _get_sentiment(results_dir: Union[str, Path]):
@@ -26,7 +56,7 @@ def _get_sentiment(results_dir: Union[str, Path]):
             continue
         date = pd.Timestamp(re.search(r"\d{8}", filename).group(0))
         labels = (
-            [0.5] * (sentiments.count(2) + sentiments.count(3))
+            [0.5] * sentiments.count(2)  # + sentiments.count(3))
             + [0] * sentiments.count(0)
             + [1] * sentiments.count(1)
         )
@@ -38,12 +68,13 @@ def _get_sentiment(results_dir: Union[str, Path]):
 def create_index(prompt_name: str, model: str) -> pd.Series:
     results_dir = Path(f"./data/results/{prompt_name}/{model}")
     press_conferences = os.listdir(results_dir / "press_conferences")
-    speeches = os.listdir(results_dir / "speeches_2")
+    speeches = os.listdir(results_dir / "speeches")
     press_conferences = _get_sentiment(
         Path(f"./data/results/{prompt_name}/{model}/press_conferences")
     )
-    speeches = _get_sentiment(Path(f"./data/results/{prompt_name}/{model}/speeches_2"))
-    result = press_conferences + speeches
+    speeches = _get_sentiment(Path(f"./data/results/{prompt_name}/{model}/speeches"))
+    minutes = _get_sentiment(Path(f"./data/results/{prompt_name}/{model}/minutes"))
+    result = press_conferences + speeches + minutes
     idx, values = zip(*result)
     return pd.Series(values, idx).sort_index()
 
@@ -67,7 +98,8 @@ def get_equivalent_series(
     if log:
         hawk_series = np.log(hawk_series / hawk_series.shift(1))
         all_data_series = {
-            key: np.log(value / value.shift(1)) for key, value in all_data_series.items()
+            key: np.log(value / value.shift(1))
+            for key, value in all_data_series.items()
         }
     common_index = reduce(
         lambda x, y: x.intersection(y.dropna().index),
@@ -140,6 +172,10 @@ def get_regression_df(
                 ols_attribute
             )
     return df
+
+
+def get_ar_x(endog: np.ndarray, lags: int):
+    return AutoReg(endog, lags).fit()
 
 
 def get_loc_max(df: pd.DataFrame) -> tuple[str, str]:
