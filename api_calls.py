@@ -33,9 +33,10 @@ async def _get_api_call(
     total: Optional[int] = 1,
 ) -> str | ConnectionAbortedError:
     base_wait_time = 1
-    max_retries = 20
+    max_retries = 10
     async with SEMAPHORE:
         for i in range(max_retries):
+            wait_time = base_wait_time * (1.9**i)
             async with session.post(
                 "https://api.openai.com/v1/chat/completions",
                 json={
@@ -56,9 +57,8 @@ async def _get_api_call(
                     )
                     return result["choices"][0]["message"]["content"]
                 elif response.status == 429:
-                    wait_time = base_wait_time * (2**i)
                     logger.error(
-                        "Rate limit error. Initiaiting exponential backoff",
+                        "Rate limit error. Initiaiting exponential backoff.",
                         response_status=response.status,
                         wait_time=wait_time,
                         index=index,
@@ -67,18 +67,18 @@ async def _get_api_call(
                     await asyncio.sleep(wait_time)
                 elif response.status == 502:
                     logger.error(
-                        "Bad gateway, waiting..",
+                        "Bad gateway. Inititating exponential backoff.",
                         response_status=response.status,
-                        wait_time=5,
+                        wait_time= wait_time,
                         index=index,
                         total=total,
                     )
                     await asyncio.sleep(5)
                 else:
                     logger.error(
-                        f"Unexpected Error. Waiting...",
+                        f"Unexpected Error. initiating exponential backoff",
                         response_status=response.status,
-                        wait_time=2,
+                        wait_time=wait_time,
                         index=index,
                         total=total,
                     )
@@ -86,7 +86,7 @@ async def _get_api_call(
     raise ConnectionAbortedError("Too many errors. Aborted API Call")
 
 
-async def _get_api_call_handle_timeout(
+async def _get_api_call_error_handling(
     session: aiohttp.ClientSession,
     model: str,
     messages: list[dict[str, str]],
@@ -94,29 +94,35 @@ async def _get_api_call_handle_timeout(
     total: Optional[int] = 1,
 ) -> str:
     counter = 0
-    while counter < 5:
+    base_wait_time = 1
+    while counter <= 10:
         try:
-            return await _get_api_call(session, model, messages, index)
+            return await _get_api_call(session, model, messages, index, total)
         except asyncio.TimeoutError:
-            logger.error("got timeout error, waiting", wait_time=5, counter=counter)
-            time.sleep(5)
+            wait_time = base_wait_time * (1.9**counter)
+            logger.error("Got timeout error. Initiating exponential backoff.", wait_time=wait_time, counter=counter)
+            time.sleep(wait_time)
+            counter += 1
             try:
-                return await _get_api_call(session, model, messages, index)
+                return await _get_api_call(session, model, messages, index, total)
             except asyncio.TimeoutError:
-                logger.error("got timeout error, waiting", wait_time=5, counter=counter)
-                time.sleep(5)
+                wait_time = base_wait_time * (1.9**counter)
+                logger.error("got timeout error. Initiating exponential backoff", wait_time=5, counter=counter)
+                time.sleep(wait_time)
                 counter += 1
-                pass
         except aiohttp.ClientOSError:
-            logger.error("Client OS Error, waiting", wait_time=5, counter=counter)
-            time.sleep(5)
+            wait_time = base_wait_time * (1.9**counter)
+            logger.error("Client OS Error. Initiating exponential backoff", wait_time=wait_time, counter=counter)
+            time.sleep(wait_time)
+            counter += 1
             try:
-                return await _get_api_call(session, model, messages, index)
+                return await _get_api_call(session, model, messages, index, total)
             except aiohttp.ClientOSError:
+                wait_time = base_wait_time * (1.9**counter)
                 logger.error("got OS Error, waiting", wait_time=5, counter=counter)
-                time.sleep(5)
+                time.sleep(wait_time)
                 counter += 1
-                pass
+    raise TimeoutError("Exhausted Error Handling")
 
 
 async def get_api_call(
@@ -131,7 +137,12 @@ async def get_api_call(
     messages = [
         {"role": "user", "content": instructions[0] + base_input},
     ]
-    answer = await _get_api_call_handle_timeout(session, model, messages, index, total)
+    try:
+        answer = await _get_api_call_error_handling(session, model, messages, index, total)
+    except TimeoutError:
+        answers.append(None)
+        logger.info(f"Couldn't get API call for {index}, defaulting to None")
+        return None
     answers.append(answer)
     for prompt in instructions[1:]:
         messages.extend(
@@ -140,7 +151,7 @@ async def get_api_call(
                 {"role": "user", "content": prompt},
             )
         )
-        answer = await _get_api_call_handle_timeout(
+        answer = await _get_api_call_error_handling(
             session, model, messages, index, total
         )
         answers.append(answer)
