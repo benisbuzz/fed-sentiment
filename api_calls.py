@@ -13,11 +13,11 @@ load_dotenv()
 logger = structlog.get_logger()
 
 SSL_CONTEXT = ssl.create_default_context(cafile=certifi.where())
-SEMAPHORE = asyncio.Semaphore(25)
+SEMAPHORE = asyncio.Semaphore(12)
 
 
 def open_session() -> aiohttp.ClientSession:
-    timeout = aiohttp.ClientTimeout(total=30.0)
+    timeout = aiohttp.ClientTimeout(total=10.0)
     return aiohttp.ClientSession(timeout=timeout)
 
 
@@ -33,7 +33,7 @@ async def _get_api_call(
     total: Optional[int] = 1,
 ) -> str | ConnectionAbortedError:
     base_wait_time = 1
-    max_retries = 10
+    max_retries = 20
     async with SEMAPHORE:
         for i in range(max_retries):
             wait_time = base_wait_time * (1.9**i)
@@ -47,42 +47,29 @@ async def _get_api_call(
                 ssl=SSL_CONTEXT,
                 headers={"Authorization": f"Bearer {os.getenv('OPENAI_API_KEY')}"},
             ) as response:
+                logger.info(response.status)
                 if response.status == 200:
                     result = await response.json()
-                    logger.info(
-                        f"completed {index} / {total}",
-                        response_status=response.status,
+                    logger.info(f"completed {index} / {total}")
+                    return result["choices"][0]["message"]["content"]
+                elif response.status in [429, 502]:
+                    logger.error(
+                        f"Got {response.status}",
+                        response = response.status,
+                        wait_time=wait_time,
                         index=index,
                         total=total,
                     )
-                    return result["choices"][0]["message"]["content"]
-                elif response.status == 429:
+                    await asyncio.sleep(wait_time)
+                else:
                     logger.error(
-                        "Rate limit error. Initiaiting exponential backoff.",
+                        f"Unexpected Error",
                         response_status=response.status,
                         wait_time=wait_time,
                         index=index,
                         total=total,
                     )
                     await asyncio.sleep(wait_time)
-                elif response.status == 502:
-                    logger.error(
-                        "Bad gateway. Inititating exponential backoff.",
-                        response_status=response.status,
-                        wait_time= wait_time,
-                        index=index,
-                        total=total,
-                    )
-                    await asyncio.sleep(5)
-                else:
-                    logger.error(
-                        f"Unexpected Error. initiating exponential backoff",
-                        response_status=response.status,
-                        wait_time=wait_time,
-                        index=index,
-                        total=total,
-                    )
-                    await asyncio.sleep(2)
     raise ConnectionAbortedError("Too many errors. Aborted API Call")
 
 
@@ -166,6 +153,22 @@ async def get_multiple_api_calls(
         get_api_call(session, model, instructions, base_input, index, len(base_inputs))
         for index, base_input in enumerate(base_inputs, start=1)
     ]
+    result = await asyncio.gather(*futures)
+    await close_session(session)
+    return result
+
+def get_justify_prompt(sentiment):
+    return (f"The following sentence indicates a {sentiment} stance on US monetary policy. Explain why the sentence is {sentiment} "
+            f"in less than 50 words. Start your answer with 'This sentence is {sentiment} because'. The sentence: ")
+
+async def get_multiple_api_calls_given_sentiment(sentiments: list[int], base_inputs: list[str]) -> list[str]:
+    key = {0: "dovish", 1: "hawkish", 2: "neutral", "-": "neutral"}
+    session = open_session()
+    futures = [_get_api_call_error_handling(
+        session, 
+        "gpt-4",
+        [{"role": "user", "content": get_justify_prompt(key[sentiment]) + base_input}]
+        ) for sentiment, base_input in zip(sentiments, base_inputs)]
     result = await asyncio.gather(*futures)
     await close_session(session)
     return result

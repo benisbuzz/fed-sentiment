@@ -30,10 +30,8 @@ def _find_label(string: str) -> int | None:
             return 0
         elif sentiment == "hawkish":
             return 1
-        elif sentiment == "neutral":
-            return 2
         else:
-            return 3
+            return 2
     else:
         return None
 
