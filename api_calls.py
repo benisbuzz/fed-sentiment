@@ -6,7 +6,7 @@ import os
 import structlog
 import asyncio
 import time
-from typing import Optional
+from typing import Optional, Union
 
 load_dotenv()
 
@@ -55,7 +55,7 @@ async def _get_api_call(
                 elif response.status in [429, 502]:
                     logger.error(
                         f"Got {response.status}",
-                        response = response.status,
+                        response=response.status,
                         wait_time=wait_time,
                         index=index,
                         total=total,
@@ -87,19 +87,31 @@ async def _get_api_call_error_handling(
             return await _get_api_call(session, model, messages, index, total)
         except asyncio.TimeoutError:
             wait_time = base_wait_time * (1.9**counter)
-            logger.error("Got timeout error. Initiating exponential backoff.", wait_time=wait_time, counter=counter)
+            logger.error(
+                "Got timeout error. Initiating exponential backoff.",
+                wait_time=wait_time,
+                counter=counter,
+            )
             time.sleep(wait_time)
             counter += 1
             try:
                 return await _get_api_call(session, model, messages, index, total)
             except asyncio.TimeoutError:
                 wait_time = base_wait_time * (1.9**counter)
-                logger.error("got timeout error. Initiating exponential backoff", wait_time=5, counter=counter)
+                logger.error(
+                    "got timeout error. Initiating exponential backoff",
+                    wait_time=5,
+                    counter=counter,
+                )
                 time.sleep(wait_time)
                 counter += 1
         except aiohttp.ClientOSError:
             wait_time = base_wait_time * (1.9**counter)
-            logger.error("Client OS Error. Initiating exponential backoff", wait_time=wait_time, counter=counter)
+            logger.error(
+                "Client OS Error. Initiating exponential backoff",
+                wait_time=wait_time,
+                counter=counter,
+            )
             time.sleep(wait_time)
             counter += 1
             try:
@@ -116,16 +128,20 @@ async def get_api_call(
     session: aiohttp.ClientSession,
     model: str,
     instructions: list[str],
-    base_input: str,
+    base_input: Union[str, None],
     index: Optional[int] = 1,
     total: Optional[int] = 1,
-) -> list[str]:
+) -> list[str | None] | None:
+    if not base_input:
+        return [None] * len(instructions)
     answers = []
     messages = [
         {"role": "user", "content": instructions[0] + base_input},
     ]
     try:
-        answer = await _get_api_call_error_handling(session, model, messages, index, total)
+        answer = await _get_api_call_error_handling(
+            session, model, messages, index, total
+        )
     except TimeoutError:
         answers.append(None)
         logger.info(f"Couldn't get API call for {index}, defaulting to None")
@@ -157,18 +173,32 @@ async def get_multiple_api_calls(
     await close_session(session)
     return result
 
-def get_justify_prompt(sentiment):
-    return (f"The following sentence indicates a {sentiment} stance on US monetary policy. Explain why the sentence is {sentiment} "
-            f"in less than 50 words. Start your answer with 'This sentence is {sentiment} because'. The sentence: ")
 
-async def get_multiple_api_calls_given_sentiment(sentiments: list[int], base_inputs: list[str]) -> list[str]:
+def get_justify_prompt(sentiment):
+    return (
+        f"The following sentence indicates a {sentiment} stance on US monetary policy. Explain why the sentence is {sentiment} "
+        f"in less than 50 words. Start your answer with 'This sentence is {sentiment} because'. The sentence: "
+    )
+
+
+async def get_multiple_api_calls_given_sentiment(
+    sentiments: list[int], base_inputs: list[str]
+) -> list[str]:
     key = {0: "dovish", 1: "hawkish", 2: "neutral", "-": "neutral"}
     session = open_session()
-    futures = [_get_api_call_error_handling(
-        session, 
-        "gpt-4",
-        [{"role": "user", "content": get_justify_prompt(key[sentiment]) + base_input}]
-        ) for sentiment, base_input in zip(sentiments, base_inputs)]
+    futures = [
+        _get_api_call_error_handling(
+            session,
+            "gpt-4",
+            [
+                {
+                    "role": "user",
+                    "content": get_justify_prompt(key[sentiment]) + base_input,
+                }
+            ],
+        )
+        for sentiment, base_input in zip(sentiments, base_inputs)
+    ]
     result = await asyncio.gather(*futures)
     await close_session(session)
     return result

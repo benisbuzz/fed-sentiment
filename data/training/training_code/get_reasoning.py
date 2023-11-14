@@ -12,11 +12,17 @@ logger = structlog.get_logger(__name__)
 
 limiter = AsyncLimiter(1000)
 
+
 def get_justify_prompt(sentiment):
-    return (f"The following sentence indicates a {sentiment} stance on US monetary policy. Explain why the sentence is {sentiment} "
-            f"in less than 50 words. Start your answer with 'This sentence is {sentiment} because'. The sentence: ")
+    return (
+        f"The following sentence indicates a {sentiment} stance on US monetary policy. Explain why the sentence is {sentiment} "
+        f"in less than 50 words. Start your answer with 'This sentence is {sentiment} because'. The sentence: "
+    )
+
 
 limiter = AsyncLimiter(1000)
+
+
 async def get_api_call(messages: list[dict[str, str]]) -> str:
     async with limiter:
         completion = None
@@ -40,12 +46,24 @@ async def get_api_call(messages: list[dict[str, str]]) -> str:
                     raise RuntimeError("Failed 50 times")
     return completion.choices[0].message.content
 
-async def get_multiple_answers(sentiments: list[int], base_inputs: list[str]) -> list[str]:
+
+async def get_multiple_answers(
+    sentiments: list[int], base_inputs: list[str]
+) -> list[str]:
     key = {0: "dovish", 1: "hawkish", 2: "neutral", "-": "neutral"}
-    futures = [get_api_call(
-        [{"role": "user", "content": get_justify_prompt(key[sentiment]) + base_input}]
-        ) for sentiment, base_input in zip(sentiments, base_inputs)]
+    futures = [
+        get_api_call(
+            [
+                {
+                    "role": "user",
+                    "content": get_justify_prompt(key[sentiment]) + base_input,
+                }
+            ]
+        )
+        for sentiment, base_input in zip(sentiments, base_inputs)
+    ]
     return await asyncio.gather(*futures)
+
 
 async def get_reasoning(annotated_data: pd.DataFrame, file_name: str) -> pd.DataFrame:
     raw_sentiment = await get_multiple_answers(

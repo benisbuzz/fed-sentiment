@@ -1,29 +1,33 @@
 import os
-import api_calls as api
-import tokenisation as tkn
+from api_calls import get_multiple_api_calls
 from pathlib import Path
-from typing import Union, Optional
+from typing import Union
 import regex as re
-import json
+import pandas as pd
+import numpy as np
 import structlog
 
-RESULTS = Path("./data/results")
+RESULTS = Path("data/results")
 logger = structlog.get_logger()
 
 
-def get_txt_list(path: Union[str, Path]) -> list[str]:
-    with open(path, "r") as file:
-        return file.read().splitlines()
+def _fetch_df(input_path: Union[str, Path], output_path: Union[str, Path]):
+    if os.path.exists(output_path):
+        file = pd.read_parquet(output_path)
+        if all(col_name in file for col_name in ["label", "reason"]):
+            logger.info(f"{output_path} already created")
+            return file
+    file = pd.read_parquet(input_path)
+    for col_name in ["label", "reason"]:
+        file[col_name] = [[] for _ in range(file.shape[0])]
+    file.to_parquet(output_path)
+    return file
 
 
-def _make_dir(dir: Union[Path, str]) -> None:
-    if not os.path.exists(dir):
-        logger.info("creating dir", path=dir)
-        os.makedirs(dir)
-
-
-def _find_label(string: str) -> int | None:
-    match = re.search(r"\b(hawkish|dovish|neutral|irrelevant)\b", string, re.IGNORECASE)
+def _find_label(string: Union[str, float]) -> int | None:
+    if not string:
+        return np.nan
+    match = re.search(r"\b(hawkish|dovish|neutral)\b", string, re.IGNORECASE)
     if match:
         sentiment = match.group(0).lower()
         if sentiment == "dovish":
@@ -33,86 +37,102 @@ def _find_label(string: str) -> int | None:
         else:
             return 2
     else:
-        return None
+        return np.nan
 
 
-def _get_file_name(model: str, prompt_name: str, date: str) -> str:
-    return f"{model}_{prompt_name}_{date}.json"
-
-
-async def _scrape_and_call(
-    dates: list[str],
-    base_url: str,
-    is_pc: bool,
+async def call_from_df(
+    df: pd.DataFrame,
+    important_words: list[str],
+    output_dir: Union[str, Path],
     model: str,
     instructions: list[str],
-    prompt_name: str,
 ):
-    output_dir = RESULTS / prompt_name / model
-    # First, lets create output dir if it does not already exist
-    _make_dir(output_dir)
-    for date in dates:
-        logger.info(f"working on {date}")
-        result = []
-        # Now check if we have already got the file we are about to make, if we do, move on
-        file_name = _get_file_name(model, prompt_name, date)
-        if os.path.isfile(output_dir / file_name):
-            logger.info(f"already got {file_name}. Continuing")
+
+    for i in range(df.shape[0]):
+        # If we already have labels, continue
+        if any(df.iloc[i, -2]):
+            logger.info(f"got {df.index[i]}, moving on")
             continue
-        # Now we start to tokenise, beginning with getting raw text
-        raw_release = tkn.get_pdf_text(base_url + date + ".pdf")
-        logger.info("fetched release text", text_len=len(raw_release))
-        if is_pc:
-            # If we are working with PC, just fetch chairman lines and filter out irrelevant sentence
-            speaker_split = tkn.get_speaker_text(
-                raw_release, get_txt_list("./data/scraping/fed_chairs.txt")
-            )
-            logger.info("split pc into chair lines", num_lines=len(speaker_split))
-            final_split = tkn.get_important_text(speaker_split)
-            logger.info("finished tokenising", num_sentences=len(final_split))
-        else:
-            # If its not a PC, just filter out irrelevant sentences
-            final_split = tkn.get_important_text(tkn.basic_tokeniser(raw_release))
-            logger.info("finished tokenising", num_sentences=len(final_split))
-        # Now we can run these tokenised sentences through chatgpt with the passed instructions
-        sentiments = await api.get_multiple_api_calls(model, instructions, final_split)
-        logger.info("finished getting sentiments")
-        # Now lets get individual lists for setniment reasoning and sentiment labels.
-        # This will depend on whether we have multiple instructions for each sentence
+        # Filter out useless sentences
+        sentences = [
+            sentence if any(word in sentence for word in important_words) else None
+            for sentence in df.iloc[i, -3]
+        ]
+        if len([sentence for sentence in sentences if sentence]) < 20:
+            continue
+        # Make all the API calls
+        sentiments = await get_multiple_api_calls(model, instructions, sentences)
+        # Check if our prompt has multiple outputs
         multiple_instructions = all(len(sentiment) == 2 for sentiment in sentiments)
-        labels = [
-            _find_label(sentiment[1])
-            if multiple_instructions is True
-            else _find_label(sentiment)
-            for sentiment in sentiments
-        ]
-        reasons = [
-            sentiment[0] if multiple_instructions is True else sentiment
-            for sentiment in sentiments
-        ]
-        # Now lets build our result list for this date
-        for sentence, label, reason in zip(final_split, labels, reasons):
-            result.append({"sentence": sentence, "label": label, "reason": reason})
-        # Finally we can export to json
-        with open(output_dir / file_name, "w") as file:
-            json.dump(result, file)
-        logger.info("wrote file", date=date)
+        # Add labels to df
+        df.iloc[i, -2] = np.append(
+            df.iloc[i, -2],
+            [
+                _find_label(sentiment[1])
+                if multiple_instructions
+                else _find_label(sentiment[0])
+                for sentiment in sentiments
+            ],
+        )
+        # Add reasoning to df
+        df.iloc[i, -1] = np.append(
+            df.iloc[i, -1], [sentiment[0] for sentiment in sentiments]
+        )
+        # If we have added 5 rows, do some logging and save the df
+        if i % 5 == 0:
+            logger.info(
+                "saving df", index=i, progress=f"{round(i / df.shape[0] * 100, 2)}%"
+            )
+            df.to_parquet(output_dir)
+    df.to_parquet(output_dir)
+    return df
 
 
-async def test_model(
+def get_hawk_score(results_df: pd.DataFrame):
+    assert "label" in results_df.columns, "No Label Column"
+    hawk_scores = {
+        label: [] for label in ["hawk_score_1", "hawk_score_2", "hawk_score_3"]
+    }
+    for sentiments in [list(ele) for ele in results_df["label"]]:
+        if all(sentiments.count(num) > 5 for num in [0.0, 1.0, 2.0]):
+            hawk_scores["hawk_score_1"].append(
+                np.mean(
+                    [0] * sentiments.count(0.0)
+                    + [0.5] * sentiments.count(2.0)
+                    + [1] * sentiments.count(1.0)
+                )
+            )
+            hawk_scores["hawk_score_2"].append(
+                sentiments.count(1) / (sentiments.count(0) + sentiments.count(1))
+            )
+            hawk_scores["hawk_score_3"].append(
+                sentiments.count(1)
+                / (sentiments.count(0) + sentiments.count(1) + sentiments.count(2))
+            )
+        else:
+            for i in range(1, 4):
+                hawk_scores[f"hawk_score_{i}"].append(np.nan)
+    return pd.concat([results_df, pd.DataFrame(hawk_scores, index=results_df.index)], axis=1)
+
+def get_title_significance(titles: list[str], instructions: list[str]):
+    pass
+
+
+
+async def run_model(
+    input_path: Union[str, Path],
+    output_path: Union[str, Path],
+    important_words: list[str],
     model: str,
-    prompt_name: str,
-    pc_dates: Optional[list[str]] = None,
-    sp_dates: Optional[list[str]] = None,
-) -> None:
-    instructions = get_txt_list(f"./data/prompts/{prompt_name}.txt")
-    if pc_dates:
-        base_url = "https://www.federalreserve.gov/mediacenter/files/"
-        await _scrape_and_call(
-            pc_dates, base_url, True, model, instructions, prompt_name
-        )
-    if sp_dates:
-        base_url = "https://www.federalreserve.gov/newsevents/speech/files/"
-        await _scrape_and_call(
-            sp_dates, base_url, False, model, instructions, prompt_name
-        )
+    instructions: list[str],
+) -> pd.DataFrame:
+    base_df = _fetch_df(input_path, output_path)
+    for i in range(1,4):
+        if f"hawk_score_{i}" in base_df.columns:
+            del base_df[f"hawk_score_{i}"]
+    results_df = await call_from_df(
+        base_df, important_words, output_path, model, instructions
+    )
+    hawk_score_df = get_hawk_score(results_df)
+    hawk_score_df.to_parquet(output_path)
+    return hawk_score_df

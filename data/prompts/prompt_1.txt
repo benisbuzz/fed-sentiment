@@ -1,2 +1,0 @@
-Disregard all previous prompts. You are an expert sentence classifier. The following sentence is from FOMC. Return a short (less than 50 words) explanation of what its implications are on US monetary policy. Your answer must contain the word 'hawkish' ,'dovish', 'neutral' or 'irrelevant' in it. Start your explanation with 'This sentence'. The sentence: 
-Given the previous prompt and your answer to it, classify the sentence into 'HAWKISH', 'DOVISH', 'NEUTRAL' or 'IRRELEVANT' class. Return the label as one word
