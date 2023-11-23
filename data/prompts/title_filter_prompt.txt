@@ -1,0 +1,1 @@
+You are an expert sentence classifier. Classify the following title from FOMC into 'RELEVANT' or 'IRRELEVANT' class. Label 'RELEVANT' if the title pertains to US monetary policy. Label 'IRRELEVANT' if the title does not pertain to US monetary policy. Return the label as one word. The title: 

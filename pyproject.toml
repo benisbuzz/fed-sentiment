@@ -45,6 +45,9 @@ pdfminer = "^20191125"
 fastparquet = "^2023.10.1"
 black = "^23.11.0"
 jupyter = "^1.0.0"
+dash = "^2.14.1"
+mplfinance = "^0.12.10b0"
+dedent = "^0.5"
 
 
 [build-system]
